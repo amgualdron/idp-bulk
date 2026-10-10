@@ -19,7 +19,8 @@ has the `conda create` commands. Use `conda activate md-env` before running anyt
 the env's Python directly. All commands assume the repo root as working directory.
 
 `src/simulation.py` defaults to GPU (`--device gpu`, matching the author's workstation) but also
-accepts `--device cpu` (reads `SLURM_CPUS_PER_TASK` for HOOMD's TBB thread count when set) and
+accepts `--device cpu` (on HOOMD v4, reads `SLURM_CPUS_PER_TASK` for the TBB thread count when set; v5 removed TBB
+and is always single-threaded) and
 `--device auto` (tries GPU, falls back to CPU). The local conda env's `hoomd` build here is the
 `gpu` conda-forge variant; a CPU-only cluster should get its own env built from the `cpu` variant
 instead of transplanting this one.
