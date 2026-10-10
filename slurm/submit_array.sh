@@ -42,7 +42,6 @@ TASK_ID=$(( ${IDP_TASK_OFFSET:-0} + SLURM_ARRAY_TASK_ID ))
 #   IDP_CONDA_ENV=/groups/<group>/my-envs/md-env slurm/submit_batch_array.sh <run_dir>
 # The env must hold a CPU build of HOOMD v4+ (not the PI's hoomd_2.9.7 env —
 # simulation.py uses the v3+ API — and not the gpu build from the workstation).
-module purge
 module load "${IDP_MODULE:-anaconda}"
 eval "$(conda shell.bash hook)"
 conda activate "${IDP_CONDA_ENV:-md-env}"
