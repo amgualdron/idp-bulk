@@ -44,10 +44,13 @@ TASK_ID=$(( ${IDP_TASK_OFFSET:-0} + SLURM_ARRAY_TASK_ID ))
 # simulation.py uses the v3+ API — and not the gpu build from the workstation).
 module purge
 module load "${IDP_MODULE:-anaconda}"
+eval "$(conda shell.bash hook)"
 conda activate "${IDP_CONDA_ENV:-md-env}"
 
 set -euo pipefail
 export PYTHONUNBUFFERED=1  # so progress shows up in the .out file while running
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
+export OPENBLAS_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 
 echo "Host: $(hostname)   Job: ${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}   Manifest task: $TASK_ID   Started: $(date)"
 echo "Python: $(which python)"
