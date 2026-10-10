@@ -73,7 +73,8 @@ def main():
     ionic_concentration = row["param_ionic_concentration_M"]
     BOX_SIZE = row["param_box_size"]
     hps_scale = row["param_hydropathy_scale"]
-    ph = row.get("ph", None)
+    LJ_R_CUT = float(row["param_lj_r_cut"])
+    YUKAWA_R_CUT = float(row["param_yukawa_r_cut"])
     N = len(sequence)
 
     LOG_FILE = RUN_DIR / "logs" / f"{name}_task_{args.task_id}.json"
@@ -197,7 +198,7 @@ def main():
     lj2 = hoomd.md.pair.LJ(nlist=nl)
 
 
-    yukawa = hoomd.md.pair.Yukawa(nlist=nl, default_r_cut=3.5, mode="shift")
+    yukawa = hoomd.md.pair.Yukawa(nlist=nl, default_r_cut=YUKAWA_R_CUT, mode="shift")
 
     for i, aa1 in enumerate(AA_ORDER):
         for j, aa2 in enumerate(AA_ORDER):
@@ -210,11 +211,11 @@ def main():
 
             lj1.r_cut[(aa1, aa2)] = 2 ** (1 / 6) * sig_ij  # purely repulsive (WCA)
 
-            lj2.r_cut[(aa1, aa2)] = 3.5  # attractive
+            lj2.r_cut[(aa1, aa2)] = LJ_R_CUT  # attractive
             yukawa.params[(aa1, aa2)] = dict(
                 epsilon=yukawa_eps * charges[i] * charges[j], kappa=yukawa_kappa
             )
-            yukawa.r_cut[(aa1, aa2)] = 3.5
+            yukawa.r_cut[(aa1, aa2)] = YUKAWA_R_CUT
 
     harmonic = hoomd.md.bond.Harmonic()
     harmonic.params["AA-bond"] = dict(k=row["param_harmonic_k"], r0=row["param_harmonic_r0"])
@@ -225,10 +226,13 @@ def main():
     )
 
     # ── Writer ────────────────────────────────────────────────────────────────────
+    # Attached only after equilibration (below), with the phase set so that frames land
+    # every SAVE_EVERY steps counted from the start of production.
     gsd_writer = hoomd.write.GSD(
-        filename=GSD_FILE, trigger=hoomd.trigger.Periodic(SAVE_EVERY), mode="wb"
+        filename=GSD_FILE,
+        trigger=hoomd.trigger.Periodic(SAVE_EVERY, phase=EQUIL_STEPS % SAVE_EVERY),
+        mode="wb",
     )
-    sim.operations.writers.append(gsd_writer)
 
     update_metadata(
         LOG_FILE,
@@ -257,6 +261,7 @@ def main():
     run_with_progress(sim, EQUIL_STEPS, description=f"{name} Task {args.task_id} (Equilibrating)")
 
     # ── Production ────────────────────────────────────────────────────────────────
+    sim.operations.writers.append(gsd_writer)
     run_with_progress(sim, N_STEPS, description=f"{name} Task {args.task_id} (Production)")
     gsd_writer.flush()
 

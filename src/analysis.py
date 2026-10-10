@@ -4,6 +4,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import MDAnalysis as mda
+import yaml
 from pathlib import Path
 
 def extract_trajectory_metrics(gsd_path, task_id, seed, seq_name):
@@ -21,7 +22,10 @@ def extract_trajectory_metrics(gsd_path, task_id, seed, seq_name):
         'frame': [],
         'rg': [],
         'rg_sq': [],
-        'ree_sq': [],          
+        'ree_sq': [],
+        'ree_x': [],
+        'ree_y': [],
+        'ree_z': [],
         'asphericity': []   
     }
     
@@ -45,7 +49,7 @@ def extract_trajectory_metrics(gsd_path, task_id, seed, seq_name):
         sq = np.sum(ri_sq, axis=1)
         rg_sq = np.sum(masses * sq) / total_mass
         
-        # 4. End-to-End Distance Squared
+        # 4. End-to-End vector (last bead minus first, box frame) and its squared length
         rend = positions[-1] - positions[0]
         rendsq_val = np.sum(rend**2)
         
@@ -57,6 +61,9 @@ def extract_trajectory_metrics(gsd_path, task_id, seed, seq_name):
         metrics['rg'].append(rg)
         metrics['rg_sq'].append(rg_sq)
         metrics['ree_sq'].append(rendsq_val)
+        metrics['ree_x'].append(rend[0])
+        metrics['ree_y'].append(rend[1])
+        metrics['ree_z'].append(rend[2])
         metrics['asphericity'].append(protein.asphericity())
         
     return pd.DataFrame(metrics)
@@ -77,6 +84,17 @@ def main():
     if not manifest_path.exists():
         raise FileNotFoundError(f"Manifest not found at {manifest_path}")
 
+    # Run-level options live in the copy of the control panel generate_jobs.py left here.
+    # Trajectories are kept unless the run explicitly asks for them to be deleted.
+    run_config_path = run_dir / "run_config.yaml"
+    delete_trajectories = False
+    if run_config_path.exists():
+        with open(run_config_path) as f:
+            delete_trajectories = bool((yaml.safe_load(f) or {}).get("delete_trajectories_after_analysis", False))
+    if delete_trajectories:
+        print("delete_trajectories_after_analysis is on: each .gsd is removed once its "
+              "sequence's CSV has been written.")
+
     # 1. Load Manifest
     df = pd.read_csv(manifest_path)
 
@@ -90,6 +108,12 @@ def main():
         print(f"\nProcessing {seq_name} ({len(group_df)} scheduled tasks)...")
         pooled_ts_dfs = []
         valid_task_count = 0
+        analysed = []  # (log file, gsd file) of every trajectory read in this pass
+
+        # Rows from an earlier analysis pass, so tasks whose trajectory has since been
+        # deleted stay in the pooled CSV instead of being dropped when it is rewritten.
+        ts_csv_path = timeseries_dir / f"{seq_name}_pooled_timeseries.csv"
+        previous_df = pd.read_csv(ts_csv_path) if ts_csv_path.exists() else None
 
         for _, row in group_df.iterrows():
             task_id = row['task_id']
@@ -110,11 +134,20 @@ def main():
                                 continue
                                 
                             gsd_file = Path(traj_path_str)
+                            # The logged path is only valid where the job ran (e.g. the
+                            # cluster); fall back to this run dir's own trajectories/.
+                            if not gsd_file.exists():
+                                gsd_file = run_dir / "trajectories" / gsd_file.name
 
                             if gsd_file.exists():
                                 print(f"  [Extracting] Task {task_id} (Seed: {seed})...")
                                 ts_df = extract_trajectory_metrics(str(gsd_file), task_id, seed, seq_name)
                                 pooled_ts_dfs.append(ts_df)
+                                valid_task_count += 1
+                                analysed.append((log_file, gsd_file))
+                            elif previous_df is not None and (previous_df['task_id'] == task_id).any():
+                                print(f"  [Kept] Task {task_id}: GSD gone, reusing rows from the existing CSV.")
+                                pooled_ts_dfs.append(previous_df[previous_df['task_id'] == task_id])
                                 valid_task_count += 1
                             else:
                                 print(f"  [Skipping] Task {task_id}: GSD missing at {gsd_file}")
@@ -129,9 +162,20 @@ def main():
         # 4. Pool data and save to a clean CSV
         if valid_task_count > 0:
             master_ts_df = pd.concat(pooled_ts_dfs, ignore_index=True)
-            ts_csv_path = timeseries_dir / f"{seq_name}_pooled_timeseries.csv"
             master_ts_df.to_csv(ts_csv_path, index=False)
             print(f"  -> Success: Saved {len(master_ts_df)} total frames to {ts_csv_path.name}")
+
+            # Only now that the CSV is on disk is it safe to drop the raw trajectories
+            if delete_trajectories:
+                for log_file, gsd_file in analysed:
+                    gsd_file.unlink()
+                    with open(log_file) as f:
+                        log_data = json.load(f)
+                    log_data["trajectory_deleted"] = True
+                    with open(log_file, "w") as f:
+                        json.dump(log_data, f, indent=2)
+                if analysed:
+                    print(f"  -> Deleted {len(analysed)} trajectory file(s).")
         else:
             print(f"  -> Warning: No valid data extracted for {seq_name}.")
 

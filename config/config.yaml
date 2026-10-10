@@ -1,24 +1,18 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Master control panel for a single experiment batch.
 # ─────────────────────────────────────────────────────────────────────────────
-run_name: R15_R17_full_run
-description: "Baseline HPS1 room temp full steps run for R15 and R17"
+run_name: gen_jobs_test
+description: "Baseline HPS1 test for the pipeline generating batch jobs from a csv dataset of sequences."
 # ── Sequence selection ────────────────────────────────────────────────────────
 sequences:
-  source: sequences.yaml
+  source: protein_dataset.csv
 
-  # Option 1 — explicit list
-  select: [R15, R17]
-  # Option 2 — full database
-  # select: all
-
+  name_column: ID
+  sequence_column: Sequence
+  range: [1,100]
 # ── Parameter sets ────────────────────────────────────────────────────────────
-# Single value    → one run per sequence
-# List of values  → cartesian product (sequence x param_set)
-num_replicates: 2
+num_replicates: 1
 param_sets: [baseline]   # Example: ["baseline", "cold"] for 2 replicates per sequence
-# param_sets: [baseline, cold]   # full sweep
+delete_trajectories_after_analysis: false
 # ── Execution ─────────────────────────────────────────────────────────────────
-runner: local                 # local | slurm
-workers: 1                    # local only — parallel processes
-dry_run: false                # true = print jobs without submitting
+runner: slurm                 # local | slurm — only changes which "Next:" command generate_jobs.py prints

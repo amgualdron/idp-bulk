@@ -7,14 +7,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A pipeline for running coarse-grained (HPS/Mpipi-style, one-bead-per-residue) molecular
 dynamics simulations of intrinsically disordered proteins (IDPs) in HOOMD-blue, extracting
 structural observables (Rg, Ree, asphericity) from the resulting trajectories, and pooling
-many runs into a dataset for downstream ML work.
+runs per sequence. The repo holds only the pipeline: run outputs (`runs/`) are git-ignored, and
+notebooks, plots and ML dataset building live elsewhere.
 
 ## Environment
 
 Python code runs in the conda env `md-env` (`/home/andres/miniforge3/envs/md-env`), which has
 `hoomd`, `MDAnalysis`, `jax`, `pandas`, `numpy`, `scipy`, `matplotlib`, `seaborn`, `tqdm`,
-`scikit-learn`, `pyyaml`. There is no `environment.yml`/`requirements.txt` checked in yet — use
-`conda activate md-env` before running anything, or invoke the env's Python directly.
+`scikit-learn`, `pyyaml`. There is no `environment.yml`/`requirements.txt` checked in — the README
+has the `conda create` commands. Use `conda activate md-env` before running anything, or invoke
+the env's Python directly. All commands assume the repo root as working directory.
 
 `src/simulation.py` defaults to GPU (`--device gpu`, matching the author's workstation) but also
 accepts `--device cpu` (reads `SLURM_CPUS_PER_TASK` for HOOMD's TBB thread count when set) and
@@ -24,19 +26,23 @@ instead of transplanting this one.
 
 ## Running on a SLURM cluster
 
-`slurm/submit_batch_array.sh <run_dir> [throttle]` sizes a SLURM array job from an existing
-`job_manifest.csv` (produced by `generate_jobs.py` same as for a local run) and submits
-`slurm/submit_array.sh` as that array — each array task runs exactly one `task_id`, mirroring
-what `run_local.py` does sequentially for a local run. Cluster-specific bits (module name,
-partition/qos, `--cpus-per-task`, `--time`) are placeholders in `submit_array.sh` marked `EDIT`
-— they were templated from a PI's Stokes (UCF) scripts in `slurm_examples/` but not verified
-against live cluster docs. There is no checkpoint/restart in `simulation.py`: a task killed by
-hitting `--time` loses all progress and must restart from scratch, so size `--time` from the
-longest sequence in the batch, not the average, and calibrate CPU throughput with one real job
-before committing to a walltime/array size for a large batch.
+`slurm/submit_batch_array.sh <run_dir> [throttle] [extra sbatch flags]` submits one SLURM array
+job for an existing `job_manifest.csv` (produced by `generate_jobs.py` same as for a local run),
+running `slurm/submit_array.sh` once per `task_id` — mirroring what `run_local.py` does
+sequentially for a local run. It only submits tasks whose `logs/*.json` is not `"completed"`, so
+re-running it resubmits just the failed/timed-out ones. Manifests longer than the cluster's
+`MaxArraySize` are split into several arrays, each passing `IDP_TASK_OFFSET` so that
+`task_id = offset + $SLURM_ARRAY_TASK_ID`. The wrapper sets `--chdir` to the repo
+root and passes the run dir relative to it (sbatch copies the job script to a spool dir, so the
+job script cannot locate the repo from its own path), and sends SLURM stdout/stderr to
+`<run_dir>/slurm_logs/`. The conda module/env are overridable via `IDP_MODULE` /
+`IDP_CONDA_ENV` (defaults `anaconda` / `md-env`); resources default to 1 core and a 10-day
+walltime, modelled on a PI's working Stokes (UCF) job script but not yet run on the cluster. There is no checkpoint/restart in `simulation.py`: a task killed by hitting `--time`
+loses all progress and must restart from scratch, so size `--time` from the longest sequence in
+the batch, not the average, and calibrate CPU throughput with one real job before committing to
+a walltime for a large batch (local GPU runs of the benchmark sets took ~34-42 h each).
 
-There is no test suite, linter, or formatter configured in this repo. `src/test.py` is a
-throwaway scratch/debug script (prints `project_root`), not a real test — don't treat it as one.
+There is no test suite, linter, or formatter configured in this repo.
 
 ## Pipeline / architecture
 
@@ -46,13 +52,20 @@ one experiment batch:
 ```
 config/config.yaml          → control panel: which sequences, how many replicates, which
                                param_sets, runner (local|slurm)
-config/sequences.yaml       → sequence database: name -> {sequence, length, description}
+config/benchmark_sequences.yaml → the only built-in sequence database: 110 named benchmark
+                               proteins, name -> {sequence, length, description}
+<any>.csv                   → the usual sequence source for real batches: `sequences.source`
+                               ending in .csv is read by `name_column`/`sequence_column`;
+                               `sequences.range: [first, last]` slices either kind of source
 config/physics.yaml         → named physics parameter sets (e.g. "baseline", "cold"); entries
                                can `extends:` another set to inherit+override fields
+                               (resolved by generate_jobs.py when it writes the manifest)
 
         │  src/generate_jobs.py --config config/config.yaml
         ▼
 runs/<run_name>_<MMDD>/
+  run_config.yaml            copy of the config.yaml used; analysis.py reads run-level options
+                              from it (delete_trajectories_after_analysis, default false)
   job_manifest.csv           one row per task_id: sequence, sequence_name, seed, and every
                               physics param from physics.yaml flattened as param_<key>
   logs/<seq>_task_<id>.json  per-task status ("pending"→"running"→"completed"), written by
@@ -63,8 +76,8 @@ runs/<run_name>_<MMDD>/
 
         │  src/run_local.py --run_dir runs/<run_name>_<MMDD>   (loops the manifest, shells out
         │                                                        to simulation.py per task_id)
-        │  (or slurm array job indexing the same manifest by $SLURM_ARRAY_TASK_ID — not yet
-        │   present in this repo, only referenced in README)
+        │  (or slurm/submit_batch_array.sh <run_dir>: an array job indexing the same manifest
+        │   by $SLURM_ARRAY_TASK_ID)
         ▼
 src/simulation.py --manifest <manifest> --task_id <N>
   Reads exactly one row of job_manifest.csv, builds a linear-chain HOOMD snapshot for that
@@ -78,7 +91,7 @@ src/simulation.py --manifest <manifest> --task_id <N>
         │  src/analysis.py --run_dir runs/<run_name>_<MMDD>
         ▼
   Groups job_manifest.csv by sequence_name, and for every task whose log says "completed" and
-  whose GSD file exists, uses MDAnalysis to compute per-frame Rg, Rg², Ree², asphericity
+  whose GSD file exists, uses MDAnalysis to compute per-frame Rg, Rg², Ree vector (x, y, z), Ree², asphericity
   (center-of-mass unwrapping handles PBC without needing bond topology). Concatenates all
   replicate/seed runs for a sequence into one
   data/timeseries/<seq>_pooled_timeseries.csv.
@@ -86,14 +99,8 @@ src/simulation.py --manifest <manifest> --task_id <N>
         │  src/quick_plot.py <path/to/*_pooled_timeseries.csv>
         ▼
   Fits an exponentially-modified-Gaussian to the Rg distribution and saves a two-panel
-  histogram+KDE plot as <seq_name>_plot.png in the current directory.
+  histogram+KDE plot as <seq_name>_plot.png next to the CSV.
 ```
-
-`notebook/ml-data.ipynb` is a separate, offline aggregation step: it scans a large external
-directory of many past run outputs (not this repo's `runs/`), parses per-folder physics
-parameters and trajectory statistics in parallel, and builds `idp_ml_dataset.parquet` — the
-actual ML training dataset. `notebook/notebook.ipynb` is exploratory/scratch (JAX reimplementation
-of the AA parameter table, sequence loading experiments).
 
 ## Key conventions to preserve when editing this pipeline
 
@@ -111,5 +118,3 @@ of the AA parameter table, sequence loading experiments).
 - **Logs are the completion contract between stages.** `analysis.py` will silently skip any task
   whose log is missing, not `"status": "completed"`, or whose referenced trajectory file doesn't
   exist — it's designed to tolerate partial/failed runs in a batch rather than crash.
-- Amino acid parameters (`AA_PARAMS`) are currently duplicated between `src/simulation.py` and
-  `notebook/notebook.ipynb`; keep them in sync if either changes.

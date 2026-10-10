@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+from pathlib import Path
 from scipy.stats import exponnorm
 
 def main():
@@ -59,8 +60,8 @@ def main():
     plt.suptitle(f"Structural Distribution Progress: {seq_name}", fontsize=18, fontweight='bold', y=1.02)
     plt.tight_layout()
     
-    # Save the figure locally so you don't lose it
-    out_file = f"{seq_name}_plot.png"
+    # Save the figure next to the CSV it was made from
+    out_file = Path(args.csv_file).with_name(f"{seq_name}_plot.png")
     plt.savefig(out_file, dpi=300, bbox_inches='tight')
     print(f"Plot saved to {out_file}")
     
