@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Smoke test: 5 sequences, tiny fixed step counts, to check the pipeline end to end.
+# ─────────────────────────────────────────────────────────────────────────────
+run_name: dummy_test
+description: "5-sequence smoke test of the run directory structure; results are not physical."
+sequences:
+  source: protein_dataset.csv
+  name_column: ID
+  sequence_column: Sequence
+  range: [1, 5]
+num_replicates: 1
+param_sets: [dummy]
+delete_trajectories_after_analysis: false
+runner: local

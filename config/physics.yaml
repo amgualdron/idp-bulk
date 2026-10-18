@@ -41,3 +41,9 @@ cold:
   extends: baseline
   description: "Very low temperature run for collapse behavior"
   temperature_K: 5
+dummy:
+  extends: baseline
+  description: "Tiny fixed-length run for smoke-testing the pipeline structure (not physical)"
+  equilibration_steps: 1000
+  production_steps: 10000
+  frames: 50
